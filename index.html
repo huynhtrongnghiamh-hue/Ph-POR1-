@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auto Subtitle Green Screen Tool</title>
+    <style>
+        :root {
+            --bg-color: #121218;
+            --card-bg: #1e1e2a;
+            --accent-color: #00e676;
+            --text-color: #ffffff;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Roboto, sans-serif; }
+        body { background: var(--bg-color); color: var(--text-color); padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        h1 { margin-bottom: 10px; color: var(--accent-color); font-size: 24px; text-align: center; }
+        p.desc { color: #a0a0b0; font-size: 14px; margin-bottom: 20px; text-align: center; max-width: 600px; }
+        
+        .upload-card {
+            background: var(--card-bg);
+            border: 2px dashed #3a3a50;
+            border-radius: 12px;
+            padding: 25px;
+            width: 100%;
+            max-width: 800px;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        input[type="file"] { display: none; }
+        .btn-upload {
+            background: #2979ff;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            display: inline-block;
+            transition: 0.2s;
+            border: none;
+        }
+        .btn-upload:hover { background: #1565c0; }
+        
+        .btn-download {
+            background: #00e676;
+            color: #121218;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            display: none;
+            border: none;
+            margin-left: 10px;
+            transition: 0.2s;
+        }
+        .btn-download:hover { background: #00c853; }
+        
+        .status-box {
+            margin-top: 15px;
+            font-size: 14px;
+            color: #ffca28;
+            font-weight: 500;
+        }
+
+        .preview-container {
+            display: flex;
+            gap: 20px;
+            width: 100%;
+            max-width: 1000px;
+            flex-wrap: wrap;
+        }
+        .box {
+            flex: 1;
+            min-width: 320px;
+            background: var(--card-bg);
+            padding: 15px;
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .box h3 { font-size: 16px; color: #8c8ca0; margin-bottom: 5px; }
+        
+        video { width: 100%; border-radius: 8px; background: #000; }
+        
+        #green-canvas {
+            width: 100%;
+            height: auto;
+            aspect-ratio: 16 / 9;
+            background-color: #00FF00;
+            border-radius: 8px;
+        }
+        
+        .srt-box {
+            width: 100%;
+            max-width: 1000px;
+            margin-top: 20px;
+            background: var(--card-bg);
+            padding: 15px;
+            border-radius: 12px;
+        }
+        textarea {
+            width: 100%;
+            height: 120px;
+            background: #121218;
+            color: #00e676;
+            border: 1px solid #333;
+            border-radius: 6px;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>POR auto Tool phụ đề</h1>
+    <p class="desc">Tự động bóc phụ đề AI, tự cắt xuống dòng chống mất chữ và xuất video phông xanh kèm đầy đủ âm thanh gốc.</p>
+
+    <div class="upload-card">
+        <label for="video-input" class="btn-upload">📁 Chọn Video từ máy</label>
+        <input type="file" id="video-input" accept="video/*">
+        <button id="download-btn" class="btn-download">📥 Tải Video Phông Xanh (.mp4)</button>
+        <div class="status-box" id="status-text">Đang chuẩn bị mô hình AI...</div>
+    </div>
+
+    <div class="preview-container">
+        <div class="box">
+            <h3>Video Gốc</h3>
+            <video id="main-video" controls></video>
+        </div>
+
+        <div class="box">
+            <h3>Khung Phông Xanh (Xuất Chuẩn Phụ Đề)</h3>
+            <canvas id="green-canvas" width="1920" height="1080"></canvas>
+        </div>
+    </div>
+
+    <div class="srt-box">
+        <h3>Nội dung phụ đề (File SRT / Timestamps)</h3>
+        <textarea id="srt-output" readonly placeholder="Danh sách thời gian phụ đề..."></textarea>
+    </div>
+
+    <script type="module">
+        import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
+
+        const videoInput = document.getElementById('video-input');
+        const mainVideo = document.getElementById('main-video');
+        const statusText = document.getElementById('status-text');
+        const downloadBtn = document.getElementById('download-btn');
+        const srtOutput = document.getElementById('srt-output');
+        const canvas = document.getElementById('green-canvas');
+        const ctx = canvas.getContext('2d');
+
+        let transcriber = null;
+        let subtitlesData = [];
+        let currentText = "";
+
+        // Thuật toán tự động tính toán xuống dòng thông minh
+        function wrapText(context, text, maxWidth) {
+            const words = text.split(" ");
+            let lines = [];
+            let currentLine = words[0] || "";
+
+            for (let i = 1; i < words.length; i++) {
+                let word = words[i];
+                let width = context.measureText(currentLine + " " + word).width;
+                if (width < maxWidth) {
+                    currentLine += " " + word;
+                } else {
+                    lines.push(currentLine);
+                    currentLine = word;
+                }
+            }
+            lines.push(currentLine);
+            return lines;
+        }
+
+        // Vẽ Canvas phông xanh lá chuẩn + Phụ đề căn giữa không lề
+        function drawCanvas() {
+            ctx.fillStyle = "#00FF00";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            if (currentText) {
+                const fontSize = 55;
+                ctx.font = `bold ${fontSize}px sans-serif`;
+                ctx.textAlign = "center";
+                ctx.fillStyle = "#FFFFFF";
+                ctx.strokeStyle = "#000000";
+                ctx.lineWidth = 8;
+                
+                const maxWidth = canvas.width - 200; // Giới hạn chiều rộng chữ
+                const lines = wrapText(ctx, currentText, maxWidth);
+                const lineHeight = fontSize * 1.3;
+                
+                // Căn vị trí từ dưới lên
+                let startY = canvas.height - 120 - ((lines.length - 1) * lineHeight);
+
+                lines.forEach((line, index) => {
+                    const y = startY + (index * lineHeight);
+                    ctx.strokeText(line, canvas.width / 2, y);
+                    ctx.fillText(line, canvas.width / 2, y);
+                });
+            }
+        }
+        drawCanvas();
+
+        async function loadAIModel() {
+            statusText.innerText = "⏳ Đang khởi tạo AI POR...";
+            try {
+                transcriber = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny', { quantized: true });
+                statusText.innerText = "✅ AI đã sẵn sàng! Chọn video để bắt đầu.";
+            } catch (err) {
+                statusText.innerText = "❌ Lỗi kết nối AI. Kiểm tra mạng!";
+            }
+        }
+        loadAIModel();
+
+        async function extractAudioFromVideo(file) {
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+            const arrayBuffer = await file.arrayBuffer();
+            const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+            return audioBuffer.getChannelData(0);
+        }
+
+        videoInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            if (!transcriber) {
+                alert("Vui lòng đợi AI tải xong!");
+                return;
+            }
+
+            mainVideo.src = URL.createObjectURL(file);
+            statusText.innerText = "🔊 Đang bóc tách âm thanh...";
+            downloadBtn.style.display = "none";
+            srtOutput.value = "";
+            subtitlesData = [];
+            currentText = "";
+            drawCanvas();
+
+            try {
+                const audioData = await extractAudioFromVideo(file);
+                statusText.innerText = "🧠 AI đang tự động tạo phụ đề...";
+                
+                const output = await transcriber(audioData, {
+                    return_timestamps: true,
+                    chunk_length_s: 30,
+                    stride_length_s: 5,
+                    language: 'vietnamese',
+                    task: 'transcribe'
+                });
+
+                subtitlesData = output.chunks || [];
+                statusText.innerText = "🎉 Hoàn tất! Bạn có thể bấm Play xem thử hoặc tải Video phông xanh.";
+                downloadBtn.style.display = "inline-block";
+
+                let srtContent = "";
+                subtitlesData.forEach((chunk, index) => {
+                    const startStr = formatTime(chunk.timestamp[0]);
+                    const endStr = formatTime(chunk.timestamp[1] || chunk.timestamp[0] + 2);
+                    srtContent += `${index + 1}\n${startStr} --> ${endStr}\n${chunk.text.trim()}\n\n`;
+                });
+                srtOutput.value = srtContent;
+
+            } catch (err) {
+                statusText.innerText = "❌ Lỗi bóc tách phụ đề: " + err.message;
+            }
+        });
+
+        mainVideo.addEventListener('timeupdate', () => {
+            const currentTime = mainVideo.currentTime;
+            const currentSub = subtitlesData.find(chunk => {
+                const start = chunk.timestamp[0];
+                const end = chunk.timestamp[1] || (start + 2.5);
+                return currentTime >= start && currentTime <= end;
+            });
+
+            currentText = currentSub ? currentSub.text.trim() : "";
+            drawCanvas();
+        });
+
+        // Xuất Video Phông Xanh Kèm Tiếng Gốc
+        downloadBtn.addEventListener('click', () => {
+            const recordedChunks = [];
+            
+            // Lấy luồng hình ảnh từ Canvas
+            const canvasStream = canvas.captureStream(30);
+            
+            // Lấy luồng âm thanh từ Video Gốc
+            let audioTrack = null;
+            if (mainVideo.captureStream) {
+                audioTrack = mainVideo.captureStream().getAudioTracks()[0];
+            } else if (mainVideo.mozCaptureStream) {
+                audioTrack = mainVideo.mozCaptureStream().getAudioTracks()[0];
+            }
+
+            // Gộp hình Canvas + Tiếng Video gốc
+            const combinedStream = new MediaStream();
+            canvasStream.getVideoTracks().forEach(track => combinedStream.addTrack(track));
+            if (audioTrack) combinedStream.addTrack(audioTrack);
+
+            let options = { mimeType: 'video/webm;codecs=vp9' };
+            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                options = { mimeType: 'video/webm' };
+            }
+
+            const recorder = new MediaRecorder(combinedStream, options);
+
+            recorder.ondataavailable = (e) => {
+                if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+            };
+
+            recorder.onstop = () => {
+                const blob = new Blob(recordedChunks, { type: 'video/mp4' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'phong_xanh_phu_de_co_tieng.mp4';
+                a.click();
+                statusText.innerText = "✅ Đã tải file video phông xanh (có âm thanh) thành công!";
+            };
+
+            statusText.innerText = "🔴 Đang quay và tải video phông xanh, vui lòng chờ...";
+            mainVideo.currentTime = 0;
+            mainVideo.play();
+            recorder.start(100);
+
+            mainVideo.onended = () => {
+                recorder.stop();
+            };
+        });
+
+        function formatTime(seconds) {
+            if (!seconds) seconds = 0;
+            const date = new Date(seconds * 1000);
+            const hh = String(Math.floor(seconds / 3600)).padStart(2, '0');
+            const mm = String(date.getUTCMinutes()).padStart(2, '0');
+            const ss = String(date.getUTCSeconds()).padStart(2, '0');
+            const ms = String(date.getUTCMilliseconds()).padStart(3, '0');
+            return `${hh}:${mm}:${ss},${ms}`;
+        }
+    </script>
+</body>
+  </html>
+
